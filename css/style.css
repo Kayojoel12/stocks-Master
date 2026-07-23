@@ -1,0 +1,390 @@
+/* Google Fonts */
+
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;600;700&display=swap');
+body {
+    font-family: 'Nunito', sans-serif;
+    background: #f8f9fa;
+}
+
+.wrapper {
+    display: flex;
+    width: 100%;
+    align-items: stretch;
+}
+
+#sidebar {
+    min-width: 250px;
+    max-width: 250px;
+    min-height: 100vh;
+    transition: all 0.3s;
+}
+
+#sidebar.active {
+    margin-left: -250px;
+}
+
+#sidebar .sidebar-header {
+    background: #343a40;
+}
+
+#sidebar ul.components {
+    padding: 20px 0;
+}
+
+#sidebar ul li a {
+    padding: 10px 15px;
+    font-size: 1em;
+    display: block;
+    color: rgba(255, 255, 255, 0.7);
+    text-decoration: none;
+    transition: all 0.3s;
+}
+
+#sidebar ul li a:hover {
+    color: #fff;
+    background: #495057;
+}
+
+#sidebar ul li.active>a {
+    color: #fff;
+    background: #007bff;
+}
+
+#sidebar ul li a[aria-expanded="true"] {
+    color: #fff;
+    background: #495057;
+}
+
+#sidebar ul ul a {
+    font-size: 0.9em !important;
+    padding-left: 30px !important;
+    background: #343a40;
+}
+
+#content {
+    width: 100%;
+    min-height: 100vh;
+    transition: all 0.3s;
+}
+
+.navbar {
+    padding: 15px 10px;
+    background: #fff;
+    border: none;
+    border-radius: 0;
+    margin-bottom: 0;
+    box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+
+/* Card styling */
+
+.card {
+    border: none;
+    border-radius: 0.35rem;
+    box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
+}
+
+.card-header {
+    background-color: #f8f9fc;
+    border-bottom: 1px solid #e3e6f0;
+}
+
+
+/* Chart container */
+
+.chart-area {
+    position: relative;
+    height: 20rem;
+    width: 100%;
+}
+
+.chart-pie {
+    position: relative;
+    height: 15rem;
+    width: 100%;
+}
+
+
+/* Responsive adjustments */
+
+@media (max-width: 768px) {
+    #sidebar {
+        margin-left: -250px;
+    }
+    #sidebar.active {
+        margin-left: 0;
+    }
+    #sidebarCollapse span {
+        display: none;
+    }
+}
+
+
+/* Style pour la sidebar */
+
+#sidebar {
+    transition: all 0.3s;
+    min-height: 100vh;
+}
+
+#sidebar .components li {
+    margin: 5px 0;
+}
+
+#sidebar .components a {
+    transition: all 0.2s;
+    display: block;
+}
+
+#sidebar .components a:hover {
+    text-decoration: none;
+}
+
+
+/* Thème clair */
+
+body:not([data-bs-theme="dark"]) #sidebar .components a:hover {
+    background-color: #e9ecef;
+    color: #0d6efd !important;
+}
+
+
+/* Thème sombre */
+
+body[data-bs-theme="dark"] #sidebar .components a:hover {
+    background-color: #343a40;
+    color: #ffffff !important;
+}
+
+
+/* Style pour les sous-menus */
+
+#sidebar .collapse {
+    margin-left: 10px;
+    border-left: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+body[data-bs-theme="dark"] #sidebar .collapse {
+    border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+
+/* Style pour l'élément actif */
+
+#sidebar .components li.active a {
+    font-weight: 600;
+}
+
+
+/* [...] (contenu existant conservé) */
+
+
+/* Dark Theme */
+
+body[data-bs-theme="dark"] {
+    background-color: #0f0f0f;
+    color: #f5f5f5;
+}
+
+body[data-bs-theme="dark"] .navbar {
+    background-color: #151515 !important;
+    border-color: #ff8c00;
+}
+
+body[data-bs-theme="dark"] .card {
+    background-color: #1b1b1b;
+    border: 1px solid #2b2b2b;
+    box-shadow: 0 0.15rem 1.75rem 0 rgba(0, 0, 0, 0.3);
+}
+
+body[data-bs-theme="dark"] .card-header {
+    background-color: #202020 !important;
+    border-bottom-color: #ff8c00 !important;
+    color: #f5f5f5;
+}
+
+body[data-bs-theme="dark"] .table {
+    color: #f5f5f5;
+}
+
+body[data-bs-theme="dark"] .table-bordered {
+    border-color: #495057;
+}
+
+body[data-bs-theme="dark"] .table-bordered th,
+body[data-bs-theme="dark"] .table-bordered td {
+    border-color: #495057;
+}
+
+body[data-bs-theme="dark"] .dropdown-menu {
+    background-color: #1e1e1e;
+    border-color: #ff8c00;
+}
+
+body[data-bs-theme="dark"] .dropdown-item {
+    color: #f8f9fa;
+}
+
+body[data-bs-theme="dark"] .dropdown-item:hover {
+    background-color: #2a2a2a;
+    color: #ffad33;
+}
+
+body[data-bs-theme="dark"] .btn-primary,
+body[data-bs-theme="dark"] .btn-warning {
+    background-color: #ffc107;
+    border-color: #ffc107;
+    color: #1a1a1a;
+}
+
+body[data-bs-theme="dark"] .btn-primary:hover,
+body[data-bs-theme="dark"] .btn-warning:hover {
+    background-color: #ffca2c;
+    border-color: #ffca2c;
+    color: #1a1a1a;
+}
+
+/* Remplacer le gris par du jaune en mode sombre — sauf navbar profil */
+body[data-bs-theme="dark"] .text-muted,
+body[data-bs-theme="dark"] .text-secondary,
+body[data-bs-theme="dark"] .text-gray-800,
+body[data-bs-theme="dark"] .text-gray-300 {
+    color: #ffc107 !important;
+}
+
+body[data-bs-theme="dark"] .btn-secondary:not(.nav-profile-btn),
+body[data-bs-theme="dark"] .btn-outline-secondary:not(.nav-profile-btn) {
+    background-color: #ffc107 !important;
+    border-color: #ffc107 !important;
+    color: #1a1a1a !important;
+}
+
+body[data-bs-theme="dark"] .btn-outline-secondary:not(.nav-profile-btn):hover,
+body[data-bs-theme="dark"] .btn-secondary:not(.nav-profile-btn):hover {
+    background-color: #ffca2c !important;
+    border-color: #ffca2c !important;
+    color: #111 !important;
+}
+
+body[data-bs-theme="dark"] .badge.bg-secondary,
+body[data-bs-theme="dark"] .badge.role-badge-user {
+    background-color: #ffc107 !important;
+    color: #1a1a1a !important;
+}
+
+body[data-bs-theme="dark"] .form-control::placeholder,
+body[data-bs-theme="dark"] .form-select {
+    color: #ffc107;
+}
+
+body[data-bs-theme="dark"] hr {
+    border-color: #ffc107;
+    opacity: 0.35;
+}
+
+body[data-bs-theme="dark"] .card-header {
+    border-bottom-color: #ffc107 !important;
+}
+
+body[data-bs-theme="dark"] .navbar {
+    border-color: #ffc107;
+}
+
+
+/* Transition pour le changement de thème */
+
+body,
+.card,
+.navbar,
+.dropdown-menu,
+.table {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+.alert-fixed {
+    position: fixed;
+    top: 70px;
+    /* Ajustez selon la hauteur du navbar */
+    left: 0;
+    right: 0;
+    z-index: 9999;
+    padding: 0 15px;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.alert-fixed .alert {
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    border-radius: 0 0 4px 4px;
+}
+
+
+/* Dans votre fichier style.css */
+
+.table img {
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.table .no-image {
+    width: 60px;
+    height: 60px;
+    background-color: #f8f9fa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+}
+/* Role badges — distinct colors */
+.badge.role-badge-admin {
+    background-color: #c1121f !important;
+    color: #fff !important;
+}
+.badge.role-badge-supervisor {
+    background-color: #e09f3e !important;
+    color: #1a1a1a !important;
+}
+.badge.role-badge-cashier {
+    background-color: #2a9d8f !important;
+    color: #fff !important;
+}
+.badge.role-badge-warehouse {
+    background-color: #3a86ff !important;
+    color: #fff !important;
+}
+.badge.role-badge-user {
+    background-color: #6c757d !important;
+    color: #fff !important;
+}
+.badge.role-badge-supplier {
+    background-color: #9b5de5 !important;
+    color: #fff !important;
+}
+
+/* SPA loader */
+#spa-loader {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 99999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+#spa-loader.active { opacity: 1; }
+#spa-loader .spa-loader-bar {
+    height: 100%;
+    width: 30%;
+    background: linear-gradient(90deg, #4cc9f0, #4361ee, #4cc9f0);
+    background-size: 200% 100%;
+    animation: spaLoad 0.8s ease-in-out infinite;
+    border-radius: 0 2px 2px 0;
+}
+@keyframes spaLoad {
+    0% { transform: translateX(-100%); width: 30%; }
+    50% { width: 60%; }
+    100% { transform: translateX(350%); width: 30%; }
+}

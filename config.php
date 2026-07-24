@@ -1,4 +1,5 @@
 <?php
+ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
@@ -10,15 +11,18 @@ define('DB_PASS', getenv('DB_PASS') ?: '');
 define('ADMIN_WHATSAPP', getenv('ADMIN_WHATSAPP') ?: '237670000000');
 define('ADMIN_EMAIL', getenv('ADMIN_EMAIL') ?: 'admin@stock.com');
 
-if (session_status() === PHP_SESSION_NONE) session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 try {
     $db = new PDO("mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->exec("SET NAMES 'utf8'");
 } catch (PDOException $e) {
-    die("Erreur DB : " . $e->getMessage());
+    die("Erreur de connexion à la base de données : " . $e->getMessage());
 }
+
 // --------------------------------------------------------------
 // FONCTIONS
 // --------------------------------------------------------------
@@ -701,5 +705,4 @@ function t($key) {
     global $tr;
     return $tr[$key] ?? $key;
 }
-
-// Laisser le tampon s'écouler automatiquement à la fin du script
+// Le tampon s'écoule automatiquement à la fin du script

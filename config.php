@@ -3,22 +3,27 @@ ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
+// Démarrer la session immédiatement après le débogage
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Définitions des constantes (DB et autres)
 define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');
 define('DB_PORT', getenv('DB_PORT') ?: '3306');
 define('DB_NAME', getenv('DB_NAME') ?: 'gestion_stock');
 define('DB_USER', getenv('DB_USER') ?: 'root');
 define('DB_PASS', getenv('DB_PASS') ?: '');
-
-if (session_status() === PHP_SESSION_NONE) session_start();
+define('ADMIN_WHATSAPP', getenv('ADMIN_WHATSAPP') ?: '237670000000');
+define('ADMIN_EMAIL', getenv('ADMIN_EMAIL') ?: 'admin@stock.com');
 
 try {
     $db = new PDO("mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->exec("SET NAMES 'utf8'");
 } catch (PDOException $e) {
-    die("Erreur DB : " . $e->getMessage());
+    die("Erreur de connexion à la base de données : " . $e->getMessage());
 }
-// Toutes les fonctions sont commentées pour le test
 
 // --------------------------------------------------------------
 // FONCTIONS
@@ -680,7 +685,6 @@ $langFile = __DIR__ . '/lang/' . $lang . '.php';
 if (file_exists($langFile)) {
     $tr = require $langFile;
 } else {
-    // Table de repli en cas d'absence du fichier de langue
     $tr = [
         'admin' => 'Administrateur',
         'cashier' => 'Caissier',
@@ -702,4 +706,4 @@ function t($key) {
     global $tr;
     return $tr[$key] ?? $key;
 }
-// Le tampon s'écoule automatiquement à la fin du script
+// Fin du fichier – aucun caractère après ce point

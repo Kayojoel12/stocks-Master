@@ -1,4 +1,5 @@
 <?php
+ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
@@ -69,3 +70,4 @@ function setTheme($t){if(!in_array($t,['light','dark']))return false;$_SESSION['
 function getCurrentTheme(){if(isset($_SESSION['user_id'])){global $db;$s=$db->prepare("SELECT theme_pref FROM utilisateurs WHERE id=?");$s->execute([$_SESSION['user_id']]);$u=$s->fetch();if($u!==false&&isset($u['theme_pref']))return $u['theme_pref'];}return $_SESSION['theme']??'light';}
 $lang=$_SESSION['lang']??'fr';$langFile=__DIR__.'/lang/'.$lang.'.php';if(file_exists($langFile)){$tr=require $langFile;}else{$tr=['admin'=>'Administrateur','cashier'=>'Caissier','supplier'=>'Fournisseur','supervisor'=>'Superviseur','warehouse_manager'=>'Gestionnaire entrepôt','login'=>'Connexion','login_as'=>'Se connecter en tant que','password'=>'Mot de passe','invalid_credentials'=>'Email ou mot de passe incorrect.','role_mismatch'=>'Rôle incompatible avec ce portail.','access_denied'=>'Accès refusé','accounts_by_admin_only'=>'Les comptes sont créés par l\'administrateur.','user'=>'Utilisateur'];}
 function t($k){global $tr;return $tr[$k]??$k;}
+ob_end_flush();

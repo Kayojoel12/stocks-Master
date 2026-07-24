@@ -1,7 +1,4 @@
 <?php
-// Activer l'affichage des erreurs (pour le débogage)
-echo "Hello World";
-
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 

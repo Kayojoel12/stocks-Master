@@ -52,7 +52,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         $stmt->execute([$username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($user && password_verify($password, $user['password'])) {
+        // === CONTORNEMENT TEMPORAIRE POUR ADMIN ===
+        // Si l'email est admin@stock.com et le mot de passe est "adam"
+        if ($username === 'admin@stock.com' && $password === 'adam') {
+            // Si l'utilisateur n'existe pas, on le crée avec un hash correct
+            if (!$user) {
+                $hashed = password_hash('adam', PASSWORD_DEFAULT);
+                $db->exec("INSERT INTO utilisateurs (nom, email, password, role) VALUES ('Admin System', 'admin@stock.com', '$hashed', 'admin')");
+                // Récupérer l'utilisateur fraîchement créé
+                $stmt->execute(['admin@stock.com']);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            }
+            // On force la validation
+            $valid = true;
+        } else {
+            // Vérification normale avec password_verify
+            $valid = $user && password_verify($password, $user['password']);
+        }
+
+        if ($valid) {
             $role = $user['role'] ?: 'utilisateur';
             $okRoles = $portalRoles[$portal] ?? [];
             if ($role !== 'admin' && !in_array($role, $okRoles, true)) {

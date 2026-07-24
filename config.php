@@ -1,9 +1,4 @@
 <?php
-// ============================================================
-// Configuration avec variables d'environnement (Render) ou valeurs par défaut (local)
-// ============================================================
-
-// Activer l'affichage des erreurs pour le débogage (supprimez ces deux lignes en production)
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
@@ -13,7 +8,6 @@ define('DB_NAME', getenv('DB_NAME') ?: 'gestion_stock');
 define('DB_USER', getenv('DB_USER') ?: 'root');
 define('DB_PASS', getenv('DB_PASS') ?: '');
 
-// Configuration email
 define('EMAIL_FROM', getenv('EMAIL_FROM') ?: 'StockMaster <no-reply@votre-domaine.com>');
 define('EMAIL_REPLY_TO', getenv('EMAIL_REPLY_TO') ?: 'commandes@votre-domaine.com');
 define('PHONE_NUMBER', getenv('PHONE_NUMBER') ?: '+237 XXX XXX XXX');
@@ -21,14 +15,10 @@ define('ADMIN_WHATSAPP', getenv('ADMIN_WHATSAPP') ?: '237670000000');
 define('ADMIN_EMAIL', getenv('ADMIN_EMAIL') ?: 'admin@stock.com');
 define('COMPANY_NAME', getenv('COMPANY_NAME') ?: 'StockMaster');
 
-// Démarrer la session une seule fois (après les définitions, avant toute sortie)
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// ============================================================
-// Connexion à la base de données (avec le port)
-// ============================================================
 try {
     $db = new PDO("mysql:host=".DB_HOST.";port=".DB_PORT.";dbname=".DB_NAME, DB_USER, DB_PASS);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -37,31 +27,18 @@ try {
     die("Erreur de connexion : " . $e->getMessage());
 }
 
-/**
- * Normalise un numéro pour WhatsApp (chiffres uniquement, préfixe 237 si besoin)
- */
 function whatsapp_phone($phone) {
     $digits = preg_replace('/\D+/', '', (string)$phone);
-    if ($digits === '') {
-        return '';
-    }
-    if (strpos($digits, '237') === 0) {
-        return $digits;
-    }
-    if (strlen($digits) === 9) {
-        return '237' . $digits;
-    }
+    if ($digits === '') return '';
+    if (strpos($digits, '237') === 0) return $digits;
+    if (strlen($digits) === 9) return '237' . $digits;
     return $digits;
 }
-
 function whatsapp_link($phone, $message) {
     $num = whatsapp_phone($phone);
-    if ($num === '') {
-        $num = whatsapp_phone(ADMIN_WHATSAPP);
-    }
+    if ($num === '') $num = whatsapp_phone(ADMIN_WHATSAPP);
     return 'https://wa.me/' . $num . '?text=' . rawurlencode($message);
 }
-
 function ensure_notifications_table(PDO $db) {
     $db->exec("CREATE TABLE IF NOT EXISTS notifications (
         id INT(11) NOT NULL AUTO_INCREMENT,
@@ -79,20 +56,14 @@ function ensure_notifications_table(PDO $db) {
         KEY idx_produit (produit_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
-
-/**
- * Synchronise les alertes stock (rupture / faible) vers la table notifications
- */
 function sync_stock_alert_notifications(PDO $db) {
     ensure_notifications_table($db);
-
     $alerts = $db->query("
         SELECT p.id, p.nom, p.reference, p.seuil_alerte, COALESCE(s.quantite, 0) AS quantite
         FROM produits p
         LEFT JOIN stock s ON s.produit_id = p.id
         WHERE COALESCE(s.quantite, 0) <= p.seuil_alerte
     ")->fetchAll(PDO::FETCH_ASSOC);
-
     $check = $db->prepare("
         SELECT id FROM notifications
         WHERE type = 'alerte_stock' AND produit_id = ? AND lu = 0
@@ -102,31 +73,21 @@ function sync_stock_alert_notifications(PDO $db) {
         INSERT INTO notifications (type, titre, message, produit_id, niveau, destinataire_role)
         VALUES ('alerte_stock', ?, ?, ?, ?, 'admin')
     ");
-
     foreach ($alerts as $a) {
         $qty = (int)$a['quantite'];
         $seuil = (int)$a['seuil_alerte'];
         $isOut = $qty <= 0;
         $niveau = $isOut ? 'danger' : 'warning';
-        $titre = $isOut
-            ? ('Rupture: ' . $a['nom'])
-            : ('Stock faible: ' . $a['nom']);
-        $message = sprintf(
-            "Produit %s [%s] — stock actuel: %d (seuil: %d). %s",
-            $a['nom'],
-            $a['reference'],
-            $qty,
-            $seuil,
+        $titre = $isOut ? ('Rupture: ' . $a['nom']) : ('Stock faible: ' . $a['nom']);
+        $message = sprintf("Produit %s [%s] — stock actuel: %d (seuil: %d). %s",
+            $a['nom'], $a['reference'], $qty, $seuil,
             $isOut ? 'Rupture de stock. Commande urgente recommandée.' : 'Réapprovisionnement recommandé.'
         );
-
         $check->execute([(int)$a['id']]);
         if (!$check->fetchColumn()) {
             $insert->execute([$titre, $message, (int)$a['id'], $niveau]);
         }
     }
-
-    // Alertes inventaire par site (quantité 0 ou <= seuil sur un site)
     try {
         $siteAlerts = $db->query("
             SELECT si.site_id, s.nom AS site_nom, p.id AS produit_id, p.nom, p.reference,
@@ -136,7 +97,6 @@ function sync_stock_alert_notifications(PDO $db) {
             JOIN produits p ON p.id = si.produit_id
             WHERE si.quantite > 0 AND si.quantite <= p.seuil_alerte
         ")->fetchAll(PDO::FETCH_ASSOC);
-
         $checkSite = $db->prepare("
             SELECT id FROM notifications
             WHERE type = 'alerte_site' AND produit_id = ? AND site_id = ? AND lu = 0
@@ -146,28 +106,18 @@ function sync_stock_alert_notifications(PDO $db) {
             INSERT INTO notifications (type, titre, message, produit_id, site_id, niveau, destinataire_role)
             VALUES ('alerte_site', ?, ?, ?, ?, 'warning', 'admin')
         ");
-
         foreach ($siteAlerts as $a) {
             $checkSite->execute([(int)$a['produit_id'], (int)$a['site_id']]);
-            if ($checkSite->fetchColumn()) {
-                continue;
-            }
+            if ($checkSite->fetchColumn()) continue;
             $titre = 'Alerte entrepôt ' . $a['site_nom'] . ': ' . $a['nom'];
-            $message = sprintf(
-                "Entrepôt %s — produit %s [%s] stock: %d (seuil %d).",
-                $a['site_nom'],
-                $a['nom'],
-                $a['reference'],
-                (int)$a['quantite'],
-                (int)$a['seuil_alerte']
+            $message = sprintf("Entrepôt %s — produit %s [%s] stock: %d (seuil %d).",
+                $a['site_nom'], $a['nom'], $a['reference'],
+                (int)$a['quantite'], (int)$a['seuil_alerte']
             );
             $insertSite->execute([$titre, $message, (int)$a['produit_id'], (int)$a['site_id']]);
         }
-    } catch (Exception $e) {
-        // ignore si tables manquantes
-    }
+    } catch (Exception $e) {}
 }
-
 function count_unread_notifications(PDO $db) {
     try {
         ensure_notifications_table($db);
@@ -176,45 +126,26 @@ function count_unread_notifications(PDO $db) {
         return 0;
     }
 }
-
-/**
- * Migration légère du schéma (rôles, téléphone, paiement reçu)
- */
 function migrate_schema(PDO $db) {
     static $done = false;
     if ($done) return;
     $done = true;
-
-    try {
-        // AUTO_INCREMENT utilisateurs
-        $db->exec("ALTER TABLE utilisateurs MODIFY id INT(11) NOT NULL AUTO_INCREMENT");
-    } catch (Exception $e) {}
-
+    try { $db->exec("ALTER TABLE utilisateurs MODIFY id INT(11) NOT NULL AUTO_INCREMENT"); } catch (Exception $e) {}
     try {
         $cols = $db->query("SHOW COLUMNS FROM utilisateurs LIKE 'telephone'")->fetch();
-        if (!$cols) {
-            $db->exec("ALTER TABLE utilisateurs ADD COLUMN telephone VARCHAR(30) DEFAULT NULL AFTER email");
-        }
+        if (!$cols) $db->exec("ALTER TABLE utilisateurs ADD COLUMN telephone VARCHAR(30) DEFAULT NULL AFTER email");
     } catch (Exception $e) {}
-
     try {
         $db->exec("ALTER TABLE utilisateurs MODIFY role ENUM('admin','superviseur','caissier','gestionnaire','utilisateur','fournisseur') DEFAULT 'utilisateur'");
     } catch (Exception $e) {}
-
     try {
         $cols = $db->query("SHOW COLUMNS FROM utilisateurs LIKE 'fournisseur_id'")->fetch();
-        if (!$cols) {
-            $db->exec("ALTER TABLE utilisateurs ADD COLUMN fournisseur_id INT(11) DEFAULT NULL AFTER telephone");
-        }
+        if (!$cols) $db->exec("ALTER TABLE utilisateurs ADD COLUMN fournisseur_id INT(11) DEFAULT NULL AFTER telephone");
     } catch (Exception $e) {}
-
     try {
         $cols = $db->query("SHOW COLUMNS FROM utilisateurs LIKE 'site_id'")->fetch();
-        if (!$cols) {
-            $db->exec("ALTER TABLE utilisateurs ADD COLUMN site_id INT(11) DEFAULT NULL AFTER fournisseur_id");
-        }
+        if (!$cols) $db->exec("ALTER TABLE utilisateurs ADD COLUMN site_id INT(11) DEFAULT NULL AFTER fournisseur_id");
     } catch (Exception $e) {}
-
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_cargaisons (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -230,7 +161,6 @@ function migrate_schema(PDO $db) {
             KEY idx_fournisseur (fournisseur_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     } catch (Exception $e) {}
-
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_reglements (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -246,8 +176,6 @@ function migrate_schema(PDO $db) {
             KEY idx_fournisseur (fournisseur_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     } catch (Exception $e) {}
-
-    // Demandes fournisseur (brouillon → soumise) — style portail B2B
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_demandes (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -267,8 +195,6 @@ function migrate_schema(PDO $db) {
             KEY idx_statut (statut)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     } catch (Exception $e) {}
-
-    // Rappels de paiement (cargaisons non soldées)
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_rappels (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -284,8 +210,6 @@ function migrate_schema(PDO $db) {
             KEY idx_cargo_rap (cargaison_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     } catch (Exception $e) {}
-
-    // Photos catalogue — réservé au fournisseur
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_photos (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -298,8 +222,6 @@ function migrate_schema(PDO $db) {
             KEY idx_fourn_photo (fournisseur_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     } catch (Exception $e) {}
-
-    // Demandes de paiement (prochaine tranche) → admin + superviseur
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_demandes_paiement (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -319,7 +241,6 @@ function migrate_schema(PDO $db) {
             KEY idx_statut_dp (statut)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     } catch (Exception $e) {}
-
     try {
         $cols = $db->query("SHOW COLUMNS FROM factures LIKE 'paiement_recu'")->fetch();
         if (!$cols) {
@@ -328,16 +249,12 @@ function migrate_schema(PDO $db) {
             $db->exec("ALTER TABLE factures ADD COLUMN paiement_confirme_at DATETIME DEFAULT NULL AFTER paiement_confirme_par");
         }
     } catch (Exception $e) {}
-
-    // paiements.id doit être AUTO_INCREMENT (sinon INSERT → page blanche)
     try {
         $ai = $db->query("SHOW COLUMNS FROM paiements LIKE 'id'")->fetch(PDO::FETCH_ASSOC);
         if ($ai && stripos((string)($ai['Extra'] ?? ''), 'auto_increment') === false) {
             $db->exec("ALTER TABLE paiements MODIFY id INT(11) NOT NULL AUTO_INCREMENT");
         }
     } catch (Exception $e) {}
-
-    // Régions / villes Cameroun
     try {
         $db->exec("CREATE TABLE IF NOT EXISTS regions_cameroun (
             id INT(11) NOT NULL AUTO_INCREMENT,
@@ -369,21 +286,16 @@ function migrate_schema(PDO $db) {
                 ('Loum',5,4.7183,9.7351),('Mbalmayo',2,3.5167,11.5000)");
         }
     } catch (Exception $e) {}
-
-    // Harmoniser anciens rôles vides / user
     try {
         $db->exec("UPDATE utilisateurs SET role = 'utilisateur' WHERE role IS NULL OR role = '' OR role = 'user'");
     } catch (Exception $e) {}
 }
-
 migrate_schema($db);
 
 function cameroon_cities(PDO $db = null) {
     static $cache = null;
     if ($cache !== null) return $cache;
-    if ($db === null) {
-        global $db;
-    }
+    if ($db === null) { global $db; }
     $fallback = [
         ['nom' => 'Douala', 'region' => 'Littoral', 'lat' => '4.0511', 'lng' => '9.7679'],
         ['nom' => 'Yaoundé', 'region' => 'Centre', 'lat' => '3.8480', 'lng' => '11.5021'],
@@ -404,7 +316,7 @@ function cameroon_cities(PDO $db = null) {
         ['nom' => 'Nkongsamba', 'region' => 'Littoral', 'lat' => '4.9547', 'lng' => '9.9404'],
         ['nom' => 'Sangmélima', 'region' => 'Sud', 'lat' => '2.9333', 'lng' => '11.9833'],
         ['nom' => 'Loum', 'region' => 'Littoral', 'lat' => '4.7183', 'lng' => '9.7351'],
-        ['nom' => 'Mbalmayo', 'region' => 'Centre', 'lat' => '3.5167', 'lng' => '11.5000'],
+        ['nom' => 'Mbalmayo', 'region' => 'Centre', 'lat' => '3.5167', 'lng' => '11.5000']
     ];
     try {
         migrate_schema($db);
@@ -419,10 +331,7 @@ function cameroon_cities(PDO $db = null) {
     return $cache;
 }
 
-function current_role() {
-    return $_SESSION['role'] ?? 'utilisateur';
-}
-
+function current_role() { return $_SESSION['role'] ?? 'utilisateur'; }
 function role_label($role = null) {
     $role = $role ?? current_role();
     $labels = [
@@ -435,7 +344,6 @@ function role_label($role = null) {
     ];
     return $labels[$role] ?? $role;
 }
-
 function role_badge_class($role = null) {
     $role = $role ?? current_role();
     $map = [
@@ -444,31 +352,26 @@ function role_badge_class($role = null) {
         'caissier' => 'role-badge-cashier',
         'gestionnaire' => 'role-badge-warehouse',
         'utilisateur' => 'role-badge-user',
-        'fournisseur' => 'role-badge-supplier',
+        'fournisseur' => 'role-badge-supplier'
     ];
     return $map[$role] ?? 'role-badge-user';
 }
-
-function has_role($roles) {
-    $roles = (array)$roles;
-    return in_array(current_role(), $roles, true);
-}
-
+function has_role($roles) { $roles = (array)$roles; return in_array(current_role(), $roles, true); }
 function is_admin() { return has_role('admin'); }
-function is_superviseur() { return has_role(['admin', 'superviseur']); }
+function is_superviseur() { return has_role(['admin','superviseur']); }
 function is_caissier() { return has_role('caissier'); }
 function is_warehouse_manager() { return has_role('gestionnaire'); }
 function can_delete() { return is_admin(); }
 function can_manage_users() { return is_admin(); }
-function can_notify() { return has_role(['admin', 'superviseur']); }
-function can_edit_content() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
-function can_cashier_ops() { return has_role(['admin', 'caissier']); }
-function can_manage_stock() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
-function can_manage_products() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
-function can_set_prices() { return has_role(['admin', 'superviseur']); }
-function can_view_reports() { return has_role(['admin', 'superviseur']); }
-function can_manage_suppliers() { return has_role(['admin', 'superviseur']); }
-function can_manage_sites() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
+function can_notify() { return has_role(['admin','superviseur']); }
+function can_edit_content() { return has_role(['admin','superviseur','gestionnaire']); }
+function can_cashier_ops() { return has_role(['admin','caissier']); }
+function can_manage_stock() { return has_role(['admin','superviseur','gestionnaire']); }
+function can_manage_products() { return has_role(['admin','superviseur','gestionnaire']); }
+function can_set_prices() { return has_role(['admin','superviseur']); }
+function can_view_reports() { return has_role(['admin','superviseur']); }
+function can_manage_suppliers() { return has_role(['admin','superviseur']); }
+function can_manage_sites() { return has_role(['admin','superviseur','gestionnaire']); }
 function is_fournisseur() { return has_role('fournisseur'); }
 function can_order_without_whatsapp() { return is_superviseur(); }
 
@@ -483,9 +386,7 @@ function role_home_page() {
 
 function product_image_url($path) {
     $path = trim((string)$path);
-    if ($path !== '' && is_file(__DIR__ . '/' . ltrim($path, '/'))) {
-        return $path;
-    }
+    if ($path !== '' && is_file(__DIR__ . '/' . ltrim($path, '/'))) return $path;
     return 'data:image/svg+xml,' . rawurlencode(
         '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160" viewBox="0 0 200 160">'
         . '<rect fill="#e9ecef" width="200" height="160"/>'
@@ -521,7 +422,7 @@ function save_supplier_photo_upload($fournisseurId, $fileField = 'photo') {
         'image/jpeg' => 'jpg',
         'image/png' => 'png',
         'image/webp' => 'webp',
-        'image/gif' => 'gif',
+        'image/gif' => 'gif'
     ];
     if (!isset($map[$mime])) {
         return [null, 'Format non autorisé (JPG, PNG, WEBP, GIF).'];
@@ -540,28 +441,18 @@ function save_supplier_photo_upload($fournisseurId, $fileField = 'photo') {
 
 function is_valid_email($email) {
     $email = trim((string)$email);
-    if ($email === '' || strlen($email) > 100) {
-        return false;
-    }
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        return false;
-    }
+    if ($email === '' || strlen($email) > 100) return false;
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) return false;
     $parts = explode('@', $email);
-    if (count($parts) !== 2) {
-        return false;
-    }
+    if (count($parts) !== 2) return false;
     return str_contains($parts[1], '.');
 }
 
-function normalize_email($email) {
-    return strtolower(trim((string)$email));
-}
+function normalize_email($email) { return strtolower(trim((string)$email)); }
 
 function email_taken_by_user($db, $email, $excludeUserId = 0) {
     $email = normalize_email($email);
-    if ($email === '') {
-        return false;
-    }
+    if ($email === '') return false;
     if ($excludeUserId > 0) {
         $stmt = $db->prepare("SELECT id FROM utilisateurs WHERE LOWER(TRIM(email)) = ? AND id <> ? LIMIT 1");
         $stmt->execute([$email, (int)$excludeUserId]);
@@ -574,9 +465,7 @@ function email_taken_by_user($db, $email, $excludeUserId = 0) {
 
 function suggest_unique_user_email($db, $baseName, $domain = 'stockmaster.cm') {
     $slug = strtolower(trim(preg_replace('/[^a-zA-Z0-9]+/', '.', (string)$baseName), '.'));
-    if ($slug === '') {
-        $slug = 'compte';
-    }
+    if ($slug === '') $slug = 'compte';
     $candidate = $slug . '@' . $domain;
     $n = 1;
     while (email_taken_by_user($db, $candidate) && $n < 200) {
@@ -587,9 +476,7 @@ function suggest_unique_user_email($db, $baseName, $domain = 'stockmaster.cm') {
 }
 
 function get_user_site_id($db = null, $userId = null) {
-    if ($db === null) {
-        global $db;
-    }
+    if ($db === null) { global $db; }
     $userId = $userId ?: ($_SESSION['user_id'] ?? 0);
     if (!$userId) return 0;
     if (isset($_SESSION['site_id']) && $_SESSION['site_id'] !== null && $_SESSION['site_id'] !== '') {
@@ -619,7 +506,7 @@ function flash_set($message, $type = 'success', $page = null) {
     $page = $page ?: basename($_SERVER['PHP_SELF'] ?? 'index.php');
     $_SESSION['flash'] = [
         'message' => (string)$message,
-        'type' => in_array($type, ['success', 'error', 'danger', 'warning', 'info'], true) ? $type : 'success',
+        'type' => in_array($type, ['success','error','danger','warning','info'], true) ? $type : 'success',
         'page' => $page,
     ];
     unset($_SESSION['success'], $_SESSION['error'], $_SESSION['alert'], $_SESSION['flash_page']);
@@ -627,7 +514,6 @@ function flash_set($message, $type = 'success', $page = null) {
 
 function flash_render($page = null) {
     $page = $page ?: basename($_SERVER['PHP_SELF'] ?? 'index.php');
-
     if (empty($_SESSION['flash'])) {
         if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] !== $page) {
             return '';
@@ -664,23 +550,18 @@ function flash_render($page = null) {
             unset($_SESSION['flash_page']);
         }
     }
-
     if (empty($_SESSION['flash']) || !is_array($_SESSION['flash'])) {
         return '';
     }
-
     $f = $_SESSION['flash'];
     if (!empty($f['page']) && $f['page'] !== $page) {
         return '';
     }
-
     unset($_SESSION['flash'], $_SESSION['flash_page'], $_SESSION['success'], $_SESSION['error'], $_SESSION['alert']);
-
     $type = $f['type'] ?? 'success';
     if ($type === 'error') $type = 'danger';
     $msg = htmlspecialchars($f['message'] ?? '', ENT_QUOTES, 'UTF-8');
     if ($msg === '') return '';
-
     return '<div class="alert alert-' . htmlspecialchars($type, ENT_QUOTES) . ' alert-dismissible fade show flash-message" role="alert">'
         . $msg
         . '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>'
@@ -690,9 +571,7 @@ function flash_render($page = null) {
 function get_super_admin_phone(PDO $db) {
     try {
         $phone = $db->query("SELECT telephone FROM utilisateurs WHERE role = 'admin' AND telephone IS NOT NULL AND telephone != '' ORDER BY id ASC LIMIT 1")->fetchColumn();
-        if ($phone) {
-            return $phone;
-        }
+        if ($phone) return $phone;
     } catch (Exception $e) {}
     return ADMIN_WHATSAPP;
 }
@@ -726,18 +605,13 @@ function checkAuth() {
 }
 
 function setTheme($theme) {
-    if (!in_array($theme, ['light', 'dark'])) {
-        return false;
-    }
-
+    if (!in_array($theme, ['light','dark'])) return false;
     $_SESSION['theme'] = $theme;
-    
     if (isset($_SESSION['user_id'])) {
         global $db;
         $stmt = $db->prepare("UPDATE utilisateurs SET theme_pref = ? WHERE id = ?");
         return $stmt->execute([$theme, $_SESSION['user_id']]);
     }
-    
     return true;
 }
 
@@ -747,7 +621,6 @@ function getCurrentTheme() {
         $stmt = $db->prepare("SELECT theme_pref FROM utilisateurs WHERE id = ?");
         $stmt->execute([$_SESSION['user_id']]);
         $user = $stmt->fetch();
-        
         if ($user !== false && isset($user['theme_pref'])) {
             return $user['theme_pref'];
         }
@@ -755,14 +628,11 @@ function getCurrentTheme() {
     return $_SESSION['theme'] ?? 'light';
 }
 
-// Gestion multilingue
 $lang = $_SESSION['lang'] ?? 'fr';
 $langFile = __DIR__ . '/lang/' . $lang . '.php';
-
 if (file_exists($langFile)) {
     $tr = require $langFile;
 } else {
-    // Création d'un tableau de traduction par défaut pour éviter les erreurs
     $tr = [
         'admin' => 'Administrateur',
         'cashier' => 'Caissier',
@@ -779,9 +649,8 @@ if (file_exists($langFile)) {
         'user' => 'Utilisateur',
     ];
 }
-
 function t($key) {
     global $tr;
     return $tr[$key] ?? $key;
 }
-// NE PAS AJOUTER DE ?> POUR ÉVITER LES ESPACES FINAUX
+// NE PAS AJOUTER DE ?> 

@@ -3,13 +3,17 @@
 // Configuration avec variables d'environnement (Render) ou valeurs par défaut (local)
 // ============================================================
 
+// Activer l'affichage des erreurs pour le débogage (supprimez ces deux lignes en production)
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');
 define('DB_PORT', getenv('DB_PORT') ?: '3306');
 define('DB_NAME', getenv('DB_NAME') ?: 'gestion_stock');
 define('DB_USER', getenv('DB_USER') ?: 'root');
 define('DB_PASS', getenv('DB_PASS') ?: '');
 
-// Configuration email (inchangée)
+// Configuration email
 define('EMAIL_FROM', getenv('EMAIL_FROM') ?: 'StockMaster <no-reply@votre-domaine.com>');
 define('EMAIL_REPLY_TO', getenv('EMAIL_REPLY_TO') ?: 'commandes@votre-domaine.com');
 define('PHONE_NUMBER', getenv('PHONE_NUMBER') ?: '+237 XXX XXX XXX');
@@ -17,7 +21,7 @@ define('ADMIN_WHATSAPP', getenv('ADMIN_WHATSAPP') ?: '237670000000');
 define('ADMIN_EMAIL', getenv('ADMIN_EMAIL') ?: 'admin@stock.com');
 define('COMPANY_NAME', getenv('COMPANY_NAME') ?: 'StockMaster');
 
-// Démarrer la session une seule fois
+// Démarrer la session une seule fois (après les définitions, avant toute sortie)
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -459,9 +463,7 @@ function can_manage_users() { return is_admin(); }
 function can_notify() { return has_role(['admin', 'superviseur']); }
 function can_edit_content() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
 function can_cashier_ops() { return has_role(['admin', 'caissier']); }
-/** Entrées / sorties / inventaires (pas le caissier) */
 function can_manage_stock() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
-/** Création / édition produits (pas caissier, pas prix pour entrepôt) */
 function can_manage_products() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
 function can_set_prices() { return has_role(['admin', 'superviseur']); }
 function can_view_reports() { return has_role(['admin', 'superviseur']); }
@@ -470,7 +472,6 @@ function can_manage_sites() { return has_role(['admin', 'superviseur', 'gestionn
 function is_fournisseur() { return has_role('fournisseur'); }
 function can_order_without_whatsapp() { return is_superviseur(); }
 
-/** Page d'accueil selon le rôle (tableau de bord complet = admin seul) */
 function role_home_page() {
     if (is_admin()) return 'index.php';
     if (is_fournisseur()) return 'supplier_portal.php';
@@ -485,7 +486,6 @@ function product_image_url($path) {
     if ($path !== '' && is_file(__DIR__ . '/' . ltrim($path, '/'))) {
         return $path;
     }
-    // Placeholder SVG (équipement sans photo)
     return 'data:image/svg+xml,' . rawurlencode(
         '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160" viewBox="0 0 200 160">'
         . '<rect fill="#e9ecef" width="200" height="160"/>'
@@ -496,7 +496,6 @@ function product_image_url($path) {
     );
 }
 
-/** Notifie plusieurs rôles (admin, superviseur, …) */
 function notify_roles(PDO $db, array $roles, $type, $titre, $message, $niveau = 'warning') {
     ensure_notifications_table($db);
     $ins = $db->prepare("INSERT INTO notifications (type, titre, message, niveau, destinataire_role) VALUES (?, ?, ?, ?, ?)");
@@ -505,7 +504,6 @@ function notify_roles(PDO $db, array $roles, $type, $titre, $message, $niveau = 
     }
 }
 
-/** Upload image fournisseur → uploads/suppliers/{id}/ */
 function save_supplier_photo_upload($fournisseurId, $fileField = 'photo') {
     if (empty($_FILES[$fileField]) || ($_FILES[$fileField]['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
         return [null, 'Aucun fichier sélectionné.'];
@@ -540,17 +538,14 @@ function save_supplier_photo_upload($fournisseurId, $fileField = 'photo') {
     return ['uploads/suppliers/' . (int)$fournisseurId . '/' . $name, null];
 }
 
-/** Email au format standard (RFC via filter_var) */
 function is_valid_email($email) {
     $email = trim((string)$email);
     if ($email === '' || strlen($email) > 100) {
         return false;
     }
-    // Exige user@domaine.tld (refuse "admin", "x@237", etc.)
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         return false;
     }
-    // Domaine avec au moins un point
     $parts = explode('@', $email);
     if (count($parts) !== 2) {
         return false;
@@ -562,7 +557,6 @@ function normalize_email($email) {
     return strtolower(trim((string)$email));
 }
 
-/** Email déjà pris dans utilisateurs (hors id éventuellement) */
 function email_taken_by_user($db, $email, $excludeUserId = 0) {
     $email = normalize_email($email);
     if ($email === '') {
@@ -578,7 +572,6 @@ function email_taken_by_user($db, $email, $excludeUserId = 0) {
     return (bool)$stmt->fetchColumn();
 }
 
-/** Propose un login unique basé sur un nom */
 function suggest_unique_user_email($db, $baseName, $domain = 'stockmaster.cm') {
     $slug = strtolower(trim(preg_replace('/[^a-zA-Z0-9]+/', '.', (string)$baseName), '.'));
     if ($slug === '') {
@@ -622,9 +615,6 @@ function require_roles($roles) {
     }
 }
 
-/**
- * Message flash lié à une page (évite d'afficher le succès catégories sur users.php)
- */
 function flash_set($message, $type = 'success', $page = null) {
     $page = $page ?: basename($_SERVER['PHP_SELF'] ?? 'index.php');
     $_SESSION['flash'] = [
@@ -632,24 +622,20 @@ function flash_set($message, $type = 'success', $page = null) {
         'type' => in_array($type, ['success', 'error', 'danger', 'warning', 'info'], true) ? $type : 'success',
         'page' => $page,
     ];
-    // Nettoyer l'ancien système
     unset($_SESSION['success'], $_SESSION['error'], $_SESSION['alert'], $_SESSION['flash_page']);
 }
 
 function flash_render($page = null) {
     $page = $page ?: basename($_SERVER['PHP_SELF'] ?? 'index.php');
 
-    // Migrer legacy success/error → flash si page connue
     if (empty($_SESSION['flash'])) {
         if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] !== $page) {
-            // Message destiné à une autre page : ne pas afficher ici
             return '';
         }
         if (!empty($_SESSION['success'])) {
             if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] === $page) {
                 $_SESSION['flash'] = ['message' => $_SESSION['success'], 'type' => 'success', 'page' => $page];
             } elseif (empty($_SESSION['flash_page'])) {
-                // Orphelin sans page : supprimer pour éviter pollution cross-page
                 unset($_SESSION['success']);
             }
         }
@@ -685,7 +671,7 @@ function flash_render($page = null) {
 
     $f = $_SESSION['flash'];
     if (!empty($f['page']) && $f['page'] !== $page) {
-        return ''; // garder pour la bonne page
+        return '';
     }
 
     unset($_SESSION['flash'], $_SESSION['flash_page'], $_SESSION['success'], $_SESSION['error'], $_SESSION['alert']);
@@ -719,13 +705,11 @@ function get_super_admins(PDO $db) {
     }
 }
 
-// Vérifier l'authentification pour les pages protégées
 function checkAuth() {
     if (!isset($_SESSION['user_id'])) {
         header("Location: login.php");
         exit();
     }
-    // Rafraîchir le rôle si manquant
     if (empty($_SESSION['role'])) {
         global $db;
         try {
@@ -741,7 +725,6 @@ function checkAuth() {
     }
 }
 
-// Fonction pour définir le thème
 function setTheme($theme) {
     if (!in_array($theme, ['light', 'dark'])) {
         return false;
@@ -758,7 +741,6 @@ function setTheme($theme) {
     return true;
 }
 
-// Récupérer le thème actuel
 function getCurrentTheme() {
     if (isset($_SESSION['user_id'])) {
         global $db;
@@ -780,11 +762,26 @@ $langFile = __DIR__ . '/lang/' . $lang . '.php';
 if (file_exists($langFile)) {
     $tr = require $langFile;
 } else {
-    $tr = require __DIR__ . '/lang/fr.php';
+    // Création d'un tableau de traduction par défaut pour éviter les erreurs
+    $tr = [
+        'admin' => 'Administrateur',
+        'cashier' => 'Caissier',
+        'supplier' => 'Fournisseur',
+        'supervisor' => 'Superviseur',
+        'warehouse_manager' => 'Gestionnaire entrepôt',
+        'login' => 'Connexion',
+        'login_as' => 'Se connecter en tant que',
+        'password' => 'Mot de passe',
+        'invalid_credentials' => 'Email ou mot de passe incorrect.',
+        'role_mismatch' => 'Rôle incompatible avec ce portail.',
+        'access_denied' => 'Accès refusé',
+        'accounts_by_admin_only' => 'Les comptes sont créés par l\'administrateur.',
+        'user' => 'Utilisateur',
+    ];
 }
 
 function t($key) {
     global $tr;
     return $tr[$key] ?? $key;
 }
-?>
+// NE PAS AJOUTER DE ?> POUR ÉVITER LES ESPACES FINAUX

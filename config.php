@@ -8,20 +8,17 @@ define('DB_PORT', getenv('DB_PORT') ?: '3306');
 define('DB_NAME', getenv('DB_NAME') ?: 'gestion_stock');
 define('DB_USER', getenv('DB_USER') ?: 'root');
 define('DB_PASS', getenv('DB_PASS') ?: '');
-define('ADMIN_WHATSAPP', getenv('ADMIN_WHATSAPP') ?: '237670000000');
-define('ADMIN_EMAIL', getenv('ADMIN_EMAIL') ?: 'admin@stock.com');
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+if (session_status() === PHP_SESSION_NONE) session_start();
 
 try {
     $db = new PDO("mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->exec("SET NAMES 'utf8'");
 } catch (PDOException $e) {
-    die("Erreur de connexion à la base de données : " . $e->getMessage());
+    die("Erreur DB : " . $e->getMessage());
 }
+// Toutes les fonctions sont commentées pour le test
 
 // --------------------------------------------------------------
 // FONCTIONS

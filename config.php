@@ -3,12 +3,10 @@ ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-// Démarrer la session immédiatement après le débogage
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Définitions des constantes (DB et autres)
 define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');
 define('DB_PORT', getenv('DB_PORT') ?: '3306');
 define('DB_NAME', getenv('DB_NAME') ?: 'gestion_stock');

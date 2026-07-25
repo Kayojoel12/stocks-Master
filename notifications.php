@@ -1,12 +1,22 @@
 <?php
 require_once 'config.php';
+
+// === Définition sécurisée des constantes utilisées ===
+if (!defined('COMPANY_NAME')) {
+    define('COMPANY_NAME', 'StockMaster');
+}
+if (!defined('PHONE_NUMBER')) {
+    define('PHONE_NUMBER', '+237 XXX XXX XXX'); // Surcharge via variable d'environnement si besoin
+}
+// La constante ADMIN_WHATSAPP est déjà définie dans config.php, pas besoin de la redéfinir
+
 require_roles(['admin', 'superviseur']);
 
 $theme = getCurrentTheme();
 ensure_notifications_table($db);
 sync_stock_alert_notifications($db);
 
-// Actions
+// === Traitement des actions POST ===
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
@@ -41,6 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// === Récupération des notifications ===
 $filter = $_GET['filter'] ?? 'unread';
 $sql = "SELECT n.*, p.reference, p.nom AS produit_nom, p.seuil_alerte,
                COALESCE(s.quantite, 0) AS stock_qty,
@@ -62,7 +73,7 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $unreadCount = count_unread_notifications($db);
 
-// Message WhatsApp global pour le super admin
+// === Génération du message WhatsApp pour le super admin ===
 $adminAlertLines = [];
 foreach ($notifications as $n) {
     if ((int)$n['lu'] === 0 && in_array($n['type'], ['alerte_stock', 'alerte_site'], true)) {

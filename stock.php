@@ -1,363 +1,725 @@
 <?php
-require_once 'config.php';
+ob_start();
 
-// === Vérification des constantes utilisées ===
-if (!defined('COMPANY_NAME')) {
-    define('COMPANY_NAME', 'StockMaster');
+// === Mode debug conditionnel selon l'environnement ===
+$appEnv = getenv('APP_ENV') ?: 'production';
+
+if ($appEnv === 'development') {
+    error_reporting(E_ALL);
+    ini_set('display_errors', 1);
+} else {
+    error_reporting(0);
+    ini_set('display_errors', 0);
+    ini_set('log_errors', 1);
+    // Le fichier de log peut être défini via php.ini ou rester par défaut
 }
-if (!defined('PHONE_NUMBER')) {
-    define('PHONE_NUMBER', '+237 XXX XXX XXX');
+
+// === Session ===
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
 }
-// ADMIN_WHATSAPP est déjà défini dans config.php
 
-require_roles(['admin', 'superviseur', 'gestionnaire']);
+// === Constantes de configuration (variables d'environnement ou valeurs par défaut) ===
+define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');
+define('DB_PORT', getenv('DB_PORT') ?: '3306');
+define('DB_NAME', getenv('DB_NAME') ?: 'gestion_stock');
+define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_PASS', getenv('DB_PASS') ?: '');
+define('ADMIN_WHATSAPP', getenv('ADMIN_WHATSAPP') ?: '237670000000');
+define('ADMIN_EMAIL', getenv('ADMIN_EMAIL') ?: 'admin@stock.com');
+define('COMPANY_NAME', getenv('COMPANY_NAME') ?: 'StockMaster');
+define('PHONE_NUMBER', getenv('PHONE_NUMBER') ?: '+237 XXX XXX XXX');
 
-$theme = getCurrentTheme();
-
-// --- Pagination ---
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-$perPage = 10;
-$offset = ($page - 1) * $perPage;
-
-// --- Filtres ---
-$search = isset($_GET['search']) ? trim($_GET['search']) : '';
-$category = isset($_GET['category']) ? (int)$_GET['category'] : 0;
-$lowStock = isset($_GET['low_stock']) && $_GET['low_stock'] == '1';
-
-// --- Requête de comptage (pour pagination) ---
-$countParams = [];
-$countSql = "SELECT COUNT(*) FROM produits p 
-             LEFT JOIN stock s ON p.id = s.produit_id 
-             WHERE 1=1";
-if (!empty($search)) {
-    $countSql .= " AND (p.nom LIKE ? OR p.reference LIKE ?)";
-    $countParams[] = "%$search%";
-    $countParams[] = "%$search%";
+// === Connexion à la base de données ===
+try {
+    $db = new PDO("mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->exec("SET NAMES 'utf8'");
+} catch (PDOException $e) {
+    // En production, on peut enregistrer l'erreur dans un log sans l'afficher
+    error_log("Erreur de connexion DB : " . $e->getMessage());
+    die("Erreur de connexion à la base de données. Veuillez réessayer plus tard.");
 }
-if ($category > 0) {
-    $countSql .= " AND p.categorie_id = ?";
-    $countParams[] = $category;
-}
-if ($lowStock) {
-    $countSql .= " AND COALESCE(s.quantite, 0) <= p.seuil_alerte";
-}
-$stmt = $db->prepare($countSql);
-$stmt->execute($countParams);
-$total = $stmt->fetchColumn();
 
-// --- Requête principale ---
-$params = [];
-$sql = "SELECT p.id, p.nom, p.reference, p.seuil_alerte, 
-               c.nom AS categorie, 
-               COALESCE(s.quantite, 0) AS quantite,
-               f.email AS fournisseur_email, 
-               f.telephone AS fournisseur_tel, 
-               f.nom AS fournisseur_nom
+// --------------------------------------------------------------
+// FONCTIONS
+// --------------------------------------------------------------
+
+function whatsapp_phone($phone) {
+    $digits = preg_replace('/\D+/', '', (string)$phone);
+    if ($digits === '') return '';
+    if (strpos($digits, '237') === 0) return $digits;
+    if (strlen($digits) === 9) return '237' . $digits;
+    return $digits;
+}
+
+function whatsapp_link($phone, $message) {
+    $num = whatsapp_phone($phone);
+    if ($num === '') $num = whatsapp_phone(ADMIN_WHATSAPP);
+    return 'https://wa.me/' . $num . '?text=' . rawurlencode($message);
+}
+
+function ensure_notifications_table($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS notifications (
+        id INT(11) NOT NULL AUTO_INCREMENT,
+        type VARCHAR(50) NOT NULL DEFAULT 'alerte_stock',
+        titre VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        produit_id INT(11) DEFAULT NULL,
+        site_id INT(11) DEFAULT NULL,
+        niveau ENUM('info','warning','danger') NOT NULL DEFAULT 'warning',
+        lu TINYINT(1) NOT NULL DEFAULT 0,
+        destinataire_role VARCHAR(50) NOT NULL DEFAULT 'admin',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_lu (lu),
+        KEY idx_produit (produit_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function sync_stock_alert_notifications($db) {
+    ensure_notifications_table($db);
+    $alerts = $db->query("
+        SELECT p.id, p.nom, p.reference, p.seuil_alerte, COALESCE(s.quantite, 0) AS quantite
         FROM produits p
-        LEFT JOIN categories c ON p.categorie_id = c.id
-        LEFT JOIN stock s ON p.id = s.produit_id
-        LEFT JOIN fournisseurs f ON p.fournisseur_id = f.id
-        WHERE 1=1";
+        LEFT JOIN stock s ON s.produit_id = p.id
+        WHERE COALESCE(s.quantite, 0) <= p.seuil_alerte
+    ")->fetchAll(PDO::FETCH_ASSOC);
 
-if (!empty($search)) {
-    $sql .= " AND (p.nom LIKE ? OR p.reference LIKE ?)";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
+    $check = $db->prepare("SELECT id FROM notifications WHERE type='alerte_stock' AND produit_id = ? AND lu = 0 LIMIT 1");
+    $insert = $db->prepare("INSERT INTO notifications (type, titre, message, produit_id, niveau, destinataire_role) VALUES ('alerte_stock', ?, ?, ?, ?, 'admin')");
+
+    foreach ($alerts as $a) {
+        $qty = (int)$a['quantite'];
+        $seuil = (int)$a['seuil_alerte'];
+        $isOut = $qty <= 0;
+        $niveau = $isOut ? 'danger' : 'warning';
+        $titre = $isOut ? ('Rupture: ' . $a['nom']) : ('Stock faible: ' . $a['nom']);
+        $message = sprintf(
+            "Produit %s [%s] — stock actuel: %d (seuil: %d). %s",
+            $a['nom'],
+            $a['reference'],
+            $qty,
+            $seuil,
+            $isOut ? 'Rupture de stock. Commande urgente recommandée.' : 'Réapprovisionnement recommandé.'
+        );
+        $check->execute([(int)$a['id']]);
+        if (!$check->fetchColumn()) {
+            $insert->execute([$titre, $message, (int)$a['id'], $niveau]);
+        }
+    }
+
+    try {
+        $siteAlerts = $db->query("
+            SELECT si.site_id, s.nom AS site_nom, p.id AS produit_id, p.nom, p.reference,
+                   si.quantite, p.seuil_alerte
+            FROM site_inventaire si
+            JOIN sites s ON s.id = si.site_id
+            JOIN produits p ON p.id = si.produit_id
+            WHERE si.quantite > 0 AND si.quantite <= p.seuil_alerte
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $checkSite = $db->prepare("SELECT id FROM notifications WHERE type='alerte_site' AND produit_id = ? AND site_id = ? AND lu = 0 LIMIT 1");
+        $insertSite = $db->prepare("INSERT INTO notifications (type, titre, message, produit_id, site_id, niveau, destinataire_role) VALUES ('alerte_site', ?, ?, ?, ?, 'warning', 'admin')");
+
+        foreach ($siteAlerts as $a) {
+            $checkSite->execute([(int)$a['produit_id'], (int)$a['site_id']]);
+            if ($checkSite->fetchColumn()) continue;
+            $titre = 'Alerte entrepôt ' . $a['site_nom'] . ': ' . $a['nom'];
+            $message = sprintf(
+                "Entrepôt %s — produit %s [%s] stock: %d (seuil %d).",
+                $a['site_nom'],
+                $a['nom'],
+                $a['reference'],
+                (int)$a['quantite'],
+                (int)$a['seuil_alerte']
+            );
+            $insertSite->execute([$titre, $message, (int)$a['produit_id'], (int)$a['site_id']]);
+        }
+    } catch (Exception $e) {
+        // Ignorer les erreurs de tables manquantes
+    }
 }
-if ($category > 0) {
-    $sql .= " AND p.categorie_id = ?";
-    $params[] = $category;
+
+function count_unread_notifications($db) {
+    try {
+        ensure_notifications_table($db);
+        return (int)$db->query("SELECT COUNT(*) FROM notifications WHERE lu = 0")->fetchColumn();
+    } catch (Exception $e) {
+        return 0;
+    }
 }
-if ($lowStock) {
-    $sql .= " AND COALESCE(s.quantite, 0) <= p.seuil_alerte";
+
+function migrate_schema($db) {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+
+    try {
+        $db->exec("ALTER TABLE utilisateurs MODIFY id INT(11) NOT NULL AUTO_INCREMENT");
+    } catch (Exception $e) {}
+
+    try {
+        $cols = $db->query("SHOW COLUMNS FROM utilisateurs LIKE 'telephone'")->fetch();
+        if (!$cols) $db->exec("ALTER TABLE utilisateurs ADD COLUMN telephone VARCHAR(30) DEFAULT NULL AFTER email");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("ALTER TABLE utilisateurs MODIFY role ENUM('admin','superviseur','caissier','gestionnaire','utilisateur','fournisseur') DEFAULT 'utilisateur'");
+    } catch (Exception $e) {}
+
+    try {
+        $cols = $db->query("SHOW COLUMNS FROM utilisateurs LIKE 'fournisseur_id'")->fetch();
+        if (!$cols) $db->exec("ALTER TABLE utilisateurs ADD COLUMN fournisseur_id INT(11) DEFAULT NULL AFTER telephone");
+    } catch (Exception $e) {}
+
+    try {
+        $cols = $db->query("SHOW COLUMNS FROM utilisateurs LIKE 'site_id'")->fetch();
+        if (!$cols) $db->exec("ALTER TABLE utilisateurs ADD COLUMN site_id INT(11) DEFAULT NULL AFTER fournisseur_id");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_cargaisons (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            fournisseur_id INT(11) NOT NULL,
+            reference VARCHAR(50) NOT NULL,
+            description TEXT DEFAULT NULL,
+            montant_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+            montant_paye DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+            date_cargaison DATE NOT NULL,
+            statut ENUM('ouverte','partielle','soldee','retard') NOT NULL DEFAULT 'ouverte',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_fournisseur (fournisseur_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_reglements (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            cargaison_id INT(11) NOT NULL,
+            fournisseur_id INT(11) NOT NULL,
+            montant DECIMAL(12,2) NOT NULL,
+            type_reglement ENUM('paiement','avance','avoir') NOT NULL DEFAULT 'paiement',
+            date_reglement DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            notes TEXT DEFAULT NULL,
+            utilisateur_id INT(11) DEFAULT NULL,
+            PRIMARY KEY (id),
+            KEY idx_cargaison (cargaison_id),
+            KEY idx_fournisseur (fournisseur_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_demandes (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            fournisseur_id INT(11) NOT NULL,
+            titre VARCHAR(150) NOT NULL,
+            description TEXT DEFAULT NULL,
+            produit_id INT(11) DEFAULT NULL,
+            quantite INT(11) NOT NULL DEFAULT 1,
+            prix_unitaire DECIMAL(12,2) DEFAULT NULL,
+            statut ENUM('brouillon','soumise','acceptee','refusee','livree') NOT NULL DEFAULT 'brouillon',
+            notes_admin TEXT DEFAULT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            soumise_at DATETIME DEFAULT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_fourn_dem (fournisseur_id),
+            KEY idx_statut (statut)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_rappels (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            fournisseur_id INT(11) NOT NULL,
+            cargaison_id INT(11) NOT NULL,
+            message TEXT NOT NULL,
+            canal ENUM('interne','email','whatsapp') NOT NULL DEFAULT 'interne',
+            created_by INT(11) DEFAULT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            lu TINYINT(1) NOT NULL DEFAULT 0,
+            PRIMARY KEY (id),
+            KEY idx_fourn_rap (fournisseur_id),
+            KEY idx_cargo_rap (cargaison_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_photos (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            fournisseur_id INT(11) NOT NULL,
+            titre VARCHAR(150) NOT NULL,
+            description TEXT DEFAULT NULL,
+            image_path VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_fourn_photo (fournisseur_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS fournisseur_demandes_paiement (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            fournisseur_id INT(11) NOT NULL,
+            cargaison_id INT(11) DEFAULT NULL,
+            montant DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+            tranche VARCHAR(80) NOT NULL DEFAULT 'Prochaine tranche',
+            message TEXT DEFAULT NULL,
+            statut ENUM('soumise','en_cours','payee','refusee') NOT NULL DEFAULT 'soumise',
+            created_by INT(11) DEFAULT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            traite_par INT(11) DEFAULT NULL,
+            traite_at DATETIME DEFAULT NULL,
+            notes_traitement TEXT DEFAULT NULL,
+            PRIMARY KEY (id),
+            KEY idx_fourn_dp (fournisseur_id),
+            KEY idx_statut_dp (statut)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $e) {}
+
+    try {
+        $cols = $db->query("SHOW COLUMNS FROM factures LIKE 'paiement_recu'")->fetch();
+        if (!$cols) {
+            $db->exec("ALTER TABLE factures ADD COLUMN paiement_recu TINYINT(1) NOT NULL DEFAULT 0 AFTER mode_paiement");
+            $db->exec("ALTER TABLE factures ADD COLUMN paiement_confirme_par INT(11) DEFAULT NULL AFTER paiement_recu");
+            $db->exec("ALTER TABLE factures ADD COLUMN paiement_confirme_at DATETIME DEFAULT NULL AFTER paiement_confirme_par");
+        }
+    } catch (Exception $e) {}
+
+    try {
+        $ai = $db->query("SHOW COLUMNS FROM paiements LIKE 'id'")->fetch(PDO::FETCH_ASSOC);
+        if ($ai && stripos((string)($ai['Extra'] ?? ''), 'auto_increment') === false) {
+            $db->exec("ALTER TABLE paiements MODIFY id INT(11) NOT NULL AUTO_INCREMENT");
+        }
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS regions_cameroun (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            nom VARCHAR(80) NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY nom (nom)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $db->exec("CREATE TABLE IF NOT EXISTS villes_cameroun (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            nom VARCHAR(80) NOT NULL,
+            region_id INT(11) DEFAULT NULL,
+            lat DECIMAL(10,8) DEFAULT NULL,
+            lng DECIMAL(11,8) DEFAULT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY nom (nom)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $cnt = (int)$db->query("SELECT COUNT(*) FROM villes_cameroun")->fetchColumn();
+        if ($cnt === 0) {
+            $db->exec("INSERT INTO regions_cameroun (id, nom) VALUES
+                (1,'Adamaoua'),(2,'Centre'),(3,'Est'),(4,'Extrême-Nord'),(5,'Littoral'),
+                (6,'Nord'),(7,'Nord-Ouest'),(8,'Ouest'),(9,'Sud'),(10,'Sud-Ouest')");
+            $db->exec("INSERT INTO villes_cameroun (nom, region_id, lat, lng) VALUES
+                ('Douala',5,4.0511,9.7679),('Yaoundé',2,3.8480,11.5021),('Bafoussam',8,5.4778,10.4176),
+                ('Garoua',6,9.3015,13.3927),('Bamenda',7,5.9597,10.1460),('Maroua',4,10.5910,14.3158),
+                ('Ngaoundéré',1,7.3167,13.5833),('Kribi',9,2.9370,9.9077),('Limbé',10,4.0225,9.2080),
+                ('Bertoua',3,4.5773,13.6846),('Ebolowa',9,2.9000,11.1500),('Buea',10,4.1550,9.2410),
+                ('Edéa',5,3.8000,10.1333),('Kumba',10,4.6363,9.4465),('Dschang',8,5.4500,10.0667),
+                ('Foumban',8,5.7293,10.9000),('Nkongsamba',5,4.9547,9.9404),('Sangmélima',9,2.9333,11.9833),
+                ('Loum',5,4.7183,9.7351),('Mbalmayo',2,3.5167,11.5000)");
+        }
+    } catch (Exception $e) {}
+
+    try {
+        $db->exec("UPDATE utilisateurs SET role = 'utilisateur' WHERE role IS NULL OR role = '' OR role = 'user'");
+    } catch (Exception $e) {}
 }
-$sql .= " ORDER BY quantite ASC LIMIT $offset, $perPage";
-$stmt = $db->prepare($sql);
-$stmt->execute($params);
-$stockItems = $stmt->fetchAll();
+migrate_schema($db);
 
-// --- Catégories pour le filtre ---
-$categories = $db->query("SELECT id, nom FROM categories ORDER BY nom")->fetchAll();
-
-// --- Derniers mouvements entrants ---
-$incoming = $db->query("
-    SELECT p.nom, m.quantite, m.created_at AS date
-    FROM mouvements m
-    JOIN produits p ON m.produit_id = p.id
-    WHERE m.type = 'entree' AND m.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-    ORDER BY m.created_at DESC LIMIT 5
-")->fetchAll();
-
-// --- Dernières sorties (via factures) ---
-$outgoing = $db->query("
-    SELECT p.nom, fi.quantite, f.numero_facture, f.date_facture AS date
-    FROM facture_items fi
-    JOIN produits p ON fi.produit_id = p.id
-    JOIN factures f ON fi.facture_id = f.id
-    WHERE f.date_facture >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-    ORDER BY f.date_facture DESC LIMIT 5
-")->fetchAll();
-?>
-<!DOCTYPE html>
-<html lang="fr" data-bs-theme="<?= $theme ?>">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestion du stock - StockMaster</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="css/style.css">
-    <style>
-        .table-card { border-left: 4px solid; transition: transform .3s; }
-        .table-card:hover { transform: translateY(-5px); }
-        .incoming-card { border-left-color: #28a745; }
-        .outgoing-card { border-left-color: #dc3545; }
-        .status-badge { padding: 5px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; }
-        .status-low { background: #fff3cd; color: #856404; }
-        .status-out { background: #f8d7da; color: #721c24; }
-        .status-ok { background: #d4edda; color: #155724; }
-    </style>
-</head>
-<body class="<?= $theme == 'dark' ? 'bg-dark text-light' : 'bg-light' ?>">
-<div class="wrapper">
-    <?php include_once('includes/sidebar.php'); ?>
-    <div id="content">
-        <?php include_once('includes/navbar.php'); ?>
-        <div class="container-fluid px-4">
-            <div class="row my-4">
-                <div class="col-12">
-                    <h2 class="mb-4"><i class="fas fa-warehouse me-2"></i> <?= t('stock_management') ?></h2>
-                    <hr>
-                </div>
-            </div>
-
-            <!-- Filtres -->
-            <div class="card mb-4 shadow">
-                <div class="card-body">
-                    <form method="GET" class="row g-3">
-                        <div class="col-md-5">
-                            <label class="form-label"><?= t('search') ?></label>
-                            <input type="text" class="form-control" name="search" value="<?= htmlspecialchars($search) ?>" placeholder="<?= t('name_or_ref') ?>">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label"><?= t('category') ?></label>
-                            <select class="form-select" name="category">
-                                <option value=""><?= t('all_categories') ?></option>
-                                <?php foreach ($categories as $cat): ?>
-                                    <option value="<?= $cat['id'] ?>" <?= $category == $cat['id'] ? 'selected' : '' ?>>
-                                        <?= htmlspecialchars($cat['nom']) ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="col-md-3 d-flex align-items-end">
-                            <div class="form-check form-switch mb-3">
-                                <input class="form-check-input" type="checkbox" name="low_stock" value="1" <?= $lowStock ? 'checked' : '' ?>>
-                                <label class="form-check-label"><?= t('low_stock_only') ?></label>
-                            </div>
-                        </div>
-                        <div class="col-12">
-                            <button type="submit" class="btn btn-primary me-2">
-                                <i class="fas fa-filter me-1"></i> <?= t('filter') ?>
-                            </button>
-                            <a href="stock.php" class="btn btn-secondary">
-                                <i class="fas fa-sync-alt me-1"></i> <?= t('reset') ?>
-                            </a>
-                        </div>
-                    </form>
-                </div>
-            </div>
-
-            <!-- Tableau du stock -->
-            <div class="card shadow mb-4">
-                <div class="card-header"><h6 class="m-0 font-weight-bold text-primary"><?= t('stock_status') ?></h6></div>
-                <div class="card-body">
-                    <div class="table-responsive">
-                        <table class="table table-bordered" width="100%" cellspacing="0">
-                            <thead class="<?= $theme == 'dark' ? 'table-dark' : '' ?>">
-                                <tr>
-                                    <th><?= t('product') ?></th>
-                                    <th><?= t('reference') ?></th>
-                                    <th><?= t('category') ?></th>
-                                    <th><?= t('quantity') ?></th>
-                                    <th><?= t('threshold') ?></th>
-                                    <th><?= t('email_supplier') ?></th>
-                                    <th><?= t('status') ?></th>
-                                    <th><?= t('actions') ?></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($stockItems as $item):
-                                    $qty = (int)$item['quantite'];
-                                    $seuil = (int)$item['seuil_alerte'];
-                                    $isOut = $qty <= 0;
-                                    $isLow = $qty <= $seuil;
-                                    $orderQty = max($seuil * 2 - $qty, 1);
-                                    $waMsg = "Bonjour" . (!empty($item['fournisseur_nom']) ? ' ' . $item['fournisseur_nom'] : '') . ",\n\n"
-                                        . "ALERTE STOCK — " . COMPANY_NAME . "\n"
-                                        . "Produit: " . $item['nom'] . "\n"
-                                        . "Référence: " . $item['reference'] . "\n"
-                                        . "Stock actuel: " . $qty . "\n"
-                                        . "Seuil: " . $seuil . "\n"
-                                        . "Quantité à commander: " . $orderQty . "\n\n"
-                                        . "Merci de confirmer disponibilité.\n"
-                                        . "Contact: " . PHONE_NUMBER;
-                                    $waPhone = !empty($item['fournisseur_tel']) ? $item['fournisseur_tel'] : get_super_admin_phone($db);
-                                    $waUrl = whatsapp_link($waPhone, $waMsg);
-                                ?>
-                                <tr class="<?= $isOut ? 'table-danger' : ($isLow ? 'table-warning' : '') ?>">
-                                    <td><?= htmlspecialchars($item['nom']) ?></td>
-                                    <td><?= htmlspecialchars($item['reference']) ?></td>
-                                    <td><?= htmlspecialchars($item['categorie'] ?? '—') ?></td>
-                                    <td class="<?= $isLow ? 'text-danger fw-bold' : '' ?>"><?= $qty ?></td>
-                                    <td><?= $seuil ?></td>
-                                    <td><?= htmlspecialchars($item['fournisseur_email'] ?? '—') ?></td>
-                                    <td>
-                                        <?php if ($isOut): ?>
-                                            <span class="status-badge status-out"><?= t('out_of_stock') ?></span>
-                                        <?php elseif ($isLow): ?>
-                                            <span class="status-badge status-low"><?= t('low_stock') ?></span>
-                                        <?php else: ?>
-                                            <span class="status-badge status-ok"><?= t('available') ?></span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td class="text-nowrap">
-                                        <a href="stock_movement.php?product_id=<?= (int)$item['id'] ?>" class="btn btn-sm btn-primary" title="<?= t('manage_stock') ?>">
-                                            <i class="fas fa-exchange-alt"></i>
-                                        </a>
-                                        <a href="<?= htmlspecialchars($waUrl) ?>" target="_blank" class="btn btn-sm btn-success" title="<?= t('order_whatsapp') ?>">
-                                            <i class="fab fa-whatsapp"></i>
-                                        </a>
-                                        <button type="button" class="btn btn-sm btn-warning send-mail-btn"
-                                            title="<?= t('email_supplier') ?>"
-                                            data-product-id="<?= (int)$item['id'] ?>"
-                                            data-product-name="<?= htmlspecialchars($item['nom'], ENT_QUOTES) ?>"
-                                            data-reference="<?= htmlspecialchars($item['reference'], ENT_QUOTES) ?>"
-                                            data-quantity="<?= $qty ?>"
-                                            data-threshold="<?= $seuil ?>">
-                                            <i class="fas fa-envelope"></i>
-                                        </button>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <!-- Pagination -->
-                    <nav>
-                        <ul class="pagination justify-content-center">
-                            <?php if ($page > 1): ?>
-                                <li class="page-item"><a class="page-link" href="?page=<?= $page-1 ?>&search=<?= urlencode($search) ?>&category=<?= $category ?>&low_stock=<?= $lowStock ? 1 : 0 ?>"><?= t('previous') ?></a></li>
-                            <?php endif; ?>
-                            <?php for ($i = 1; $i <= ceil($total / $perPage); $i++): ?>
-                                <li class="page-item <?= $i == $page ? 'active' : '' ?>">
-                                    <a class="page-link" href="?page=<?= $i ?>&search=<?= urlencode($search) ?>&category=<?= $category ?>&low_stock=<?= $lowStock ? 1 : 0 ?>"><?= $i ?></a>
-                                </li>
-                            <?php endfor; ?>
-                            <?php if ($page < ceil($total / $perPage)): ?>
-                                <li class="page-item"><a class="page-link" href="?page=<?= $page+1 ?>&search=<?= urlencode($search) ?>&category=<?= $category ?>&low_stock=<?= $lowStock ? 1 : 0 ?>"><?= t('next') ?></a></li>
-                            <?php endif; ?>
-                        </ul>
-                    </nav>
-                </div>
-            </div>
-
-            <!-- Entrants / Sortants -->
-            <div class="row mt-4">
-                <div class="col-md-6 mb-4">
-                    <div class="card h-100 shadow table-card incoming-card">
-                        <div class="card-header bg-success text-white">
-                            <h5 class="mb-0"><i class="fas fa-arrow-down me-2"></i><?= t('incoming_products') ?></h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-sm">
-                                    <thead><tr><th><?= t('product') ?></th><th><?= t('quantity') ?></th><th><?= t('date') ?></th></tr></thead>
-                                    <tbody>
-                                        <?php foreach ($incoming as $p): ?>
-                                            <tr><td><?= htmlspecialchars($p['nom']) ?></td><td class="text-success">+<?= $p['quantite'] ?></td><td><?= date('d/m/Y H:i', strtotime($p['date'])) ?></td></tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <a href="movements.php?type=entree" class="btn btn-sm btn-success mt-2"><i class="fas fa-list me-1"></i> <?= t('see_all_entries') ?></a>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-6 mb-4">
-                    <div class="card h-100 shadow table-card outgoing-card">
-                        <div class="card-header bg-danger text-white">
-                            <h5 class="mb-0"><i class="fas fa-arrow-up me-2"></i><?= t('outgoing_products') ?></h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-sm">
-                                    <thead><tr><th><?= t('product') ?></th><th><?= t('quantity') ?></th><th><?= t('invoicing') ?></th><th><?= t('date') ?></th></tr></thead>
-                                    <tbody>
-                                        <?php foreach ($outgoing as $p): ?>
-                                            <tr><td><?= htmlspecialchars($p['nom']) ?></td><td class="text-danger">-<?= $p['quantite'] ?></td><td><?= htmlspecialchars($p['numero_facture']) ?></td><td><?= date('d/m/Y H:i', strtotime($p['date'])) ?></td></tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <a href="movements.php?type=sortie" class="btn btn-sm btn-danger mt-2"><i class="fas fa-list me-1"></i> <?= t('see_all_exits') ?></a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Toast -->
-<div class="position-fixed bottom-0 end-0 p-3 me-3" style="z-index:1100; max-width:350px;">
-    <div id="mainToast" class="toast align-items-center text-bg-success border-0 w-100" role="alert" aria-live="assertive" aria-atomic="true">
-        <div class="d-flex">
-            <div class="toast-body" id="mainToastBody"></div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-    </div>
-</div>
-
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script src="js/script.js"></script>
-<script>
-function showToast(msg, type='success') {
-    const toast = document.getElementById('mainToast');
-    document.getElementById('mainToastBody').textContent = msg;
-    toast.className = 'toast align-items-center text-bg-' + (type === 'danger' ? 'danger' : 'success') + ' border-0';
-    bootstrap.Toast.getOrCreateInstance(toast).show();
+function cameroon_cities($db = null) {
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    if ($db === null) {
+        global $db;
+    }
+    $fallback = [
+        ['nom' => 'Douala', 'region' => 'Littoral', 'lat' => '4.0511', 'lng' => '9.7679'],
+        ['nom' => 'Yaoundé', 'region' => 'Centre', 'lat' => '3.8480', 'lng' => '11.5021'],
+        ['nom' => 'Bafoussam', 'region' => 'Ouest', 'lat' => '5.4778', 'lng' => '10.4176'],
+        ['nom' => 'Garoua', 'region' => 'Nord', 'lat' => '9.3015', 'lng' => '13.3927'],
+        ['nom' => 'Bamenda', 'region' => 'Nord-Ouest', 'lat' => '5.9597', 'lng' => '10.1460'],
+        ['nom' => 'Maroua', 'region' => 'Extrême-Nord', 'lat' => '10.5910', 'lng' => '14.3158'],
+        ['nom' => 'Ngaoundéré', 'region' => 'Adamaoua', 'lat' => '7.3167', 'lng' => '13.5833'],
+        ['nom' => 'Kribi', 'region' => 'Sud', 'lat' => '2.9370', 'lng' => '9.9077'],
+        ['nom' => 'Limbé', 'region' => 'Sud-Ouest', 'lat' => '4.0225', 'lng' => '9.2080'],
+        ['nom' => 'Bertoua', 'region' => 'Est', 'lat' => '4.5773', 'lng' => '13.6846'],
+        ['nom' => 'Ebolowa', 'region' => 'Sud', 'lat' => '2.9000', 'lng' => '11.1500'],
+        ['nom' => 'Buea', 'region' => 'Sud-Ouest', 'lat' => '4.1550', 'lng' => '9.2410'],
+        ['nom' => 'Edéa', 'region' => 'Littoral', 'lat' => '3.8000', 'lng' => '10.1333'],
+        ['nom' => 'Kumba', 'region' => 'Sud-Ouest', 'lat' => '4.6363', 'lng' => '9.4465'],
+        ['nom' => 'Dschang', 'region' => 'Ouest', 'lat' => '5.4500', 'lng' => '10.0667'],
+        ['nom' => 'Foumban', 'region' => 'Ouest', 'lat' => '5.7293', 'lng' => '10.9000'],
+        ['nom' => 'Nkongsamba', 'region' => 'Littoral', 'lat' => '4.9547', 'lng' => '9.9404'],
+        ['nom' => 'Sangmélima', 'region' => 'Sud', 'lat' => '2.9333', 'lng' => '11.9833'],
+        ['nom' => 'Loum', 'region' => 'Littoral', 'lat' => '4.7183', 'lng' => '9.7351'],
+        ['nom' => 'Mbalmayo', 'region' => 'Centre', 'lat' => '3.5167', 'lng' => '11.5000'],
+    ];
+    try {
+        migrate_schema($db);
+        $rows = $db->query("SELECT v.nom, r.nom AS region, v.lat, v.lng
+            FROM villes_cameroun v
+            LEFT JOIN regions_cameroun r ON r.id = v.region_id
+            ORDER BY v.nom")->fetchAll(PDO::FETCH_ASSOC);
+        $cache = $rows ?: $fallback;
+    } catch (Exception $e) {
+        $cache = $fallback;
+    }
+    return $cache;
 }
-$(document).ready(function() {
-    $('.send-mail-btn').click(function() {
-        const btn = $(this);
-        btn.prop('disabled', true);
-        $.ajax({
-            url: 'send_order.php',
-            method: 'POST',
-            data: {
-                product_id: btn.data('product-id'),
-                product_name: btn.data('product-name'),
-                reference: btn.data('reference'),
-                quantity: btn.data('quantity'),
-                threshold: btn.data('threshold')
-            },
-            dataType: 'json',
-            success: function(r) {
-                if (r.success) {
-                    showToast(r.message || 'Email envoyé !', 'success');
-                    if (r.mailto) window.location.href = r.mailto;
-                } else {
-                    showToast(r.message || 'Erreur d\'envoi.', 'danger');
-                }
-            },
-            error: function() { showToast('Erreur serveur.', 'danger'); },
-            complete: function() { btn.prop('disabled', false); }
-        });
-    });
-});
-</script>
-</body>
-</html>
+
+function current_role() {
+    return $_SESSION['role'] ?? 'utilisateur';
+}
+
+function role_label($role = null) {
+    $role = $role ?? current_role();
+    $labels = [
+        'admin' => function_exists('t') ? t('admin') : 'Administrateur',
+        'superviseur' => function_exists('t') ? t('supervisor') : 'Superviseur',
+        'caissier' => function_exists('t') ? t('cashier') : 'Caissier',
+        'gestionnaire' => function_exists('t') ? t('warehouse_manager') : "Gestionnaire d'entrepôt",
+        'utilisateur' => function_exists('t') ? t('user') : 'Utilisateur',
+        'fournisseur' => function_exists('t') ? t('supplier') : 'Fournisseur',
+    ];
+    return $labels[$role] ?? $role;
+}
+
+function role_badge_class($role = null) {
+    $role = $role ?? current_role();
+    $map = [
+        'admin' => 'role-badge-admin',
+        'superviseur' => 'role-badge-supervisor',
+        'caissier' => 'role-badge-cashier',
+        'gestionnaire' => 'role-badge-warehouse',
+        'utilisateur' => 'role-badge-user',
+        'fournisseur' => 'role-badge-supplier',
+    ];
+    return $map[$role] ?? 'role-badge-user';
+}
+
+function has_role($roles) {
+    $roles = (array)$roles;
+    return in_array(current_role(), $roles, true);
+}
+
+function is_admin() { return has_role('admin'); }
+function is_superviseur() { return has_role(['admin', 'superviseur']); }
+function is_caissier() { return has_role('caissier'); }
+function is_warehouse_manager() { return has_role('gestionnaire'); }
+function can_delete() { return is_admin(); }
+function can_manage_users() { return is_admin(); }
+function can_notify() { return has_role(['admin', 'superviseur']); }
+function can_edit_content() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
+function can_cashier_ops() { return has_role(['admin', 'caissier']); }
+function can_manage_stock() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
+function can_manage_products() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
+function can_set_prices() { return has_role(['admin', 'superviseur']); }
+function can_view_reports() { return has_role(['admin', 'superviseur']); }
+function can_manage_suppliers() { return has_role(['admin', 'superviseur']); }
+function can_manage_sites() { return has_role(['admin', 'superviseur', 'gestionnaire']); }
+function is_fournisseur() { return has_role('fournisseur'); }
+function can_order_without_whatsapp() { return is_superviseur(); }
+
+function role_home_page() {
+    if (is_admin()) return 'index.php';
+    if (is_fournisseur()) return 'supplier_portal.php';
+    if (is_warehouse_manager()) return 'warehouse_dashboard.php';
+    if (is_caissier()) return 'create_invoice.php';
+    if (has_role('superviseur')) return 'reports.php';
+    return 'index.php';
+}
+
+function product_image_url($path) {
+    $path = trim((string)$path);
+    if ($path !== '' && is_file(__DIR__ . '/' . ltrim($path, '/'))) {
+        return $path;
+    }
+    return 'data:image/svg+xml,' . rawurlencode(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160" viewBox="0 0 200 160">'
+        . '<rect fill="#e9ecef" width="200" height="160"/>'
+        . '<rect x="60" y="40" width="80" height="60" rx="6" fill="#adb5bd"/>'
+        . '<circle cx="85" cy="58" r="8" fill="#ced4da"/>'
+        . '<text x="100" y="130" text-anchor="middle" fill="#6c757d" font-size="12" font-family="sans-serif">Aucune photo</text>'
+        . '</svg>'
+    );
+}
+
+function notify_roles($db, array $roles, $type, $titre, $message, $niveau = 'warning') {
+    ensure_notifications_table($db);
+    $ins = $db->prepare("INSERT INTO notifications (type, titre, message, niveau, destinataire_role) VALUES (?, ?, ?, ?, ?)");
+    foreach (array_unique($roles) as $role) {
+        $ins->execute([$type, $titre, $message, $niveau, $role]);
+    }
+}
+
+function save_supplier_photo_upload($fournisseurId, $fileField = 'photo') {
+    if (empty($_FILES[$fileField]) || ($_FILES[$fileField]['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        return [null, 'Aucun fichier sélectionné.'];
+    }
+    $f = $_FILES[$fileField];
+    if (($f['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+        return [null, 'Erreur upload (code ' . (int)$f['error'] . ').'];
+    }
+    if (($f['size'] ?? 0) > 5 * 1024 * 1024) {
+        return [null, 'Image trop lourde (max 5 Mo).'];
+    }
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $finfo->file($f['tmp_name']);
+    $map = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+    ];
+    if (!isset($map[$mime])) {
+        return [null, 'Format non autorisé (JPG, PNG, WEBP, GIF).'];
+    }
+    $dir = __DIR__ . '/uploads/suppliers/' . (int)$fournisseurId;
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        return [null, 'Impossible de créer le dossier upload.'];
+    }
+    $name = 'photo_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $map[$mime];
+    $dest = $dir . '/' . $name;
+    if (!move_uploaded_file($f['tmp_name'], $dest)) {
+        return [null, 'Échec de l\'enregistrement du fichier.'];
+    }
+    return ['uploads/suppliers/' . (int)$fournisseurId . '/' . $name, null];
+}
+
+function is_valid_email($email) {
+    $email = trim((string)$email);
+    if ($email === '' || strlen($email) > 100) return false;
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) return false;
+    $parts = explode('@', $email);
+    if (count($parts) !== 2) return false;
+    return str_contains($parts[1], '.');
+}
+
+function normalize_email($email) {
+    return strtolower(trim((string)$email));
+}
+
+function email_taken_by_user($db, $email, $excludeUserId = 0) {
+    $email = normalize_email($email);
+    if ($email === '') return false;
+    if ($excludeUserId > 0) {
+        $stmt = $db->prepare("SELECT id FROM utilisateurs WHERE LOWER(TRIM(email)) = ? AND id <> ? LIMIT 1");
+        $stmt->execute([$email, (int)$excludeUserId]);
+    } else {
+        $stmt = $db->prepare("SELECT id FROM utilisateurs WHERE LOWER(TRIM(email)) = ? LIMIT 1");
+        $stmt->execute([$email]);
+    }
+    return (bool)$stmt->fetchColumn();
+}
+
+function suggest_unique_user_email($db, $baseName, $domain = 'stockmaster.cm') {
+    $slug = strtolower(trim(preg_replace('/[^a-zA-Z0-9]+/', '.', (string)$baseName), '.'));
+    if ($slug === '') $slug = 'compte';
+    $candidate = $slug . '@' . $domain;
+    $n = 1;
+    while (email_taken_by_user($db, $candidate) && $n < 200) {
+        $candidate = $slug . $n . '@' . $domain;
+        $n++;
+    }
+    return $candidate;
+}
+
+function get_user_site_id($db = null, $userId = null) {
+    if ($db === null) {
+        global $db;
+    }
+    $userId = $userId ?: ($_SESSION['user_id'] ?? 0);
+    if (!$userId) return 0;
+    if (isset($_SESSION['site_id']) && $_SESSION['site_id'] !== null && $_SESSION['site_id'] !== '') {
+        return (int)$_SESSION['site_id'];
+    }
+    try {
+        $stmt = $db->prepare("SELECT site_id FROM utilisateurs WHERE id = ?");
+        $stmt->execute([(int)$userId]);
+        $sid = (int)$stmt->fetchColumn();
+        $_SESSION['site_id'] = $sid;
+        return $sid;
+    } catch (Exception $e) {
+        return 0;
+    }
+}
+
+function require_roles($roles) {
+    checkAuth();
+    if (!has_role($roles)) {
+        flash_set(function_exists('t') ? t('access_denied') : 'Accès refusé pour votre rôle.', 'error', 'index.php');
+        header('Location: index.php');
+        exit;
+    }
+}
+
+function flash_set($message, $type = 'success', $page = null) {
+    $page = $page ?: basename($_SERVER['PHP_SELF'] ?? 'index.php');
+    $_SESSION['flash'] = [
+        'message' => (string)$message,
+        'type' => in_array($type, ['success', 'error', 'danger', 'warning', 'info'], true) ? $type : 'success',
+        'page' => $page,
+    ];
+    unset($_SESSION['success'], $_SESSION['error'], $_SESSION['alert'], $_SESSION['flash_page']);
+}
+
+function flash_render($page = null) {
+    $page = $page ?: basename($_SERVER['PHP_SELF'] ?? 'index.php');
+
+    if (empty($_SESSION['flash'])) {
+        if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] !== $page) {
+            return '';
+        }
+        if (!empty($_SESSION['success'])) {
+            if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] === $page) {
+                $_SESSION['flash'] = ['message' => $_SESSION['success'], 'type' => 'success', 'page' => $page];
+            } elseif (empty($_SESSION['flash_page'])) {
+                unset($_SESSION['success']);
+            }
+        }
+        if (!empty($_SESSION['error'])) {
+            if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] === $page) {
+                $_SESSION['flash'] = ['message' => $_SESSION['error'], 'type' => 'danger', 'page' => $page];
+            } elseif (empty($_SESSION['flash_page'])) {
+                unset($_SESSION['error']);
+            }
+        }
+        if (!empty($_SESSION['alert']) && is_array($_SESSION['alert'])) {
+            $ap = $_SESSION['flash_page'] ?? $page;
+            if ($ap === $page) {
+                $_SESSION['flash'] = [
+                    'message' => $_SESSION['alert']['message'] ?? '',
+                    'type' => $_SESSION['alert']['type'] ?? 'info',
+                    'page' => $page,
+                ];
+            }
+            if ($ap === $page || empty($_SESSION['flash_page'])) {
+                unset($_SESSION['alert']);
+            }
+        }
+        unset($_SESSION['success'], $_SESSION['error']);
+        if (!empty($_SESSION['flash_page']) && $_SESSION['flash_page'] === $page) {
+            unset($_SESSION['flash_page']);
+        }
+    }
+
+    if (empty($_SESSION['flash']) || !is_array($_SESSION['flash'])) {
+        return '';
+    }
+
+    $f = $_SESSION['flash'];
+    if (!empty($f['page']) && $f['page'] !== $page) {
+        return '';
+    }
+
+    unset($_SESSION['flash'], $_SESSION['flash_page'], $_SESSION['success'], $_SESSION['error'], $_SESSION['alert']);
+
+    $type = $f['type'] ?? 'success';
+    if ($type === 'error') $type = 'danger';
+    $msg = htmlspecialchars($f['message'] ?? '', ENT_QUOTES, 'UTF-8');
+    if ($msg === '') return '';
+
+    return '<div class="alert alert-' . htmlspecialchars($type, ENT_QUOTES) . ' alert-dismissible fade show flash-message" role="alert">'
+        . $msg
+        . '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>'
+        . '</div>';
+}
+
+function get_super_admin_phone($db) {
+    try {
+        $phone = $db->query("SELECT telephone FROM utilisateurs WHERE role = 'admin' AND telephone IS NOT NULL AND telephone != '' ORDER BY id ASC LIMIT 1")->fetchColumn();
+        if ($phone) return $phone;
+    } catch (Exception $e) {}
+    return ADMIN_WHATSAPP;
+}
+
+function get_super_admins($db) {
+    try {
+        return $db->query("SELECT id, nom, email, telephone, role FROM utilisateurs WHERE role IN ('admin','superviseur') ORDER BY role, nom")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        return [];
+    }
+}
+
+function checkAuth() {
+    if (!isset($_SESSION['user_id'])) {
+        header("Location: login.php");
+        exit();
+    }
+    if (empty($_SESSION['role'])) {
+        global $db;
+        try {
+            $stmt = $db->prepare("SELECT role, telephone, nom FROM utilisateurs WHERE id = ?");
+            $stmt->execute([$_SESSION['user_id']]);
+            $u = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($u) {
+                $_SESSION['role'] = $u['role'] ?: 'utilisateur';
+                $_SESSION['telephone'] = $u['telephone'] ?? '';
+                $_SESSION['nom'] = $u['nom'] ?? ($_SESSION['nom'] ?? '');
+            }
+        } catch (Exception $e) {}
+    }
+}
+
+function setTheme($theme) {
+    if (!in_array($theme, ['light', 'dark'])) return false;
+    $_SESSION['theme'] = $theme;
+    if (isset($_SESSION['user_id'])) {
+        global $db;
+        $stmt = $db->prepare("UPDATE utilisateurs SET theme_pref = ? WHERE id = ?");
+        return $stmt->execute([$theme, $_SESSION['user_id']]);
+    }
+    return true;
+}
+
+function getCurrentTheme() {
+    if (isset($_SESSION['user_id'])) {
+        global $db;
+        $stmt = $db->prepare("SELECT theme_pref FROM utilisateurs WHERE id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+        $user = $stmt->fetch();
+        if ($user !== false && isset($user['theme_pref'])) {
+            return $user['theme_pref'];
+        }
+    }
+    return $_SESSION['theme'] ?? 'light';
+}
+
+// --------------------------------------------------------------
+// TRADUCTIONS
+// --------------------------------------------------------------
+$lang = $_SESSION['lang'] ?? 'fr';
+$langFile = __DIR__ . '/lang/' . $lang . '.php';
+
+if (file_exists($langFile)) {
+    $tr = require $langFile;
+} else {
+    $tr = [
+        'admin' => 'Administrateur',
+        'cashier' => 'Caissier',
+        'supplier' => 'Fournisseur',
+        'supervisor' => 'Superviseur',
+        'warehouse_manager' => 'Gestionnaire entrepôt',
+        'login' => 'Connexion',
+        'login_as' => 'Se connecter en tant que',
+        'password' => 'Mot de passe',
+        'invalid_credentials' => 'Email ou mot de passe incorrect.',
+        'role_mismatch' => 'Rôle incompatible avec ce portail.',
+        'access_denied' => 'Accès refusé',
+        'accounts_by_admin_only' => 'Les comptes sont créés par l\'administrateur.',
+        'user' => 'Utilisateur',
+    ];
+}
+
+function t($key) {
+    global $tr;
+    return $tr[$key] ?? $key;
+}
+// Fin du fichier – aucun caractère après ce point

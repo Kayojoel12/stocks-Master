@@ -704,4 +704,3 @@ function t($key) {
     global $tr;
     return $tr[$key] ?? $key;
 }
-// Fin du fichier – aucun caractère après ce point

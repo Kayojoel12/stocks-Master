@@ -56,7 +56,7 @@ body[data-bs-theme="dark"] .navbar .dropdown-item:hover {
 <nav class="navbar navbar-expand-lg navbar-light <?= $theme == 'dark' ? 'bg-dark navbar-dark' : 'bg-light' ?>">
     <div class="container-fluid">
         <button type="button" id="sidebarCollapse" class="btn <?= $theme == 'dark' ? 'btn-outline-warning' : 'btn-dark' ?>" title="Menu" aria-label="Menu">
-            <i class="fas fa-paper-plane"></i>
+            <i class="fas fa-chevron-left"></i>
         </button>
 
         <form class="d-none d-md-flex ms-3" id="globalSearchForm" action="#" method="GET" onsubmit="return false;">
